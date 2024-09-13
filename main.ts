@@ -4,7 +4,7 @@ control.runInParallel(function () {
     console.log(`connecting to ws://127.0.0.1:443`)
 
     // string tests
-    const ws = new WebSocket("wss://127.0.0.1:443")
+    const ws = new WebSocket("ws://127.0.0.1:443")
     ws.onerror = () => console.log("error")
     ws.onmessage = (msg) => {
         const data = msg.data;
