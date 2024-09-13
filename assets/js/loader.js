@@ -1,112 +1,168 @@
-document.addEventListener("DOMContentLoaded", function () {
-    const CHANNEL = "wss"
-    const CLOSE_MESSAGE = 1 << 0;
-    const MESSAGE_MESSAGE = 1 << 1;
-    const OPEN_MESSAGE = 1 << 2;
-    const ERROR_MESSAGE = 1 << 3;
-    const STRING_DATA = 1 << 4;
-    const BUFFER_DATA = 1 << 5;
+var meta = undefined;
+var channelHandlers = {}
 
-    let sockets = {};
+function addSimMessageHandler(channel, handler) {
+    channelHandlers[channel] = handler;
+}
 
-    const proxy = data => {
-        simPostMessage({
-            type: 'messagepacket',
-            channel: CHANNEL,
-            data
-        });
-    }
+function simPostMessage(msg) {
+    const frame = document.getElementById("simframe");
+    if (frame)
+        frame.contentWindow.postMessage(msg, meta.simUrl);
+}
 
-    function openSocket(id, url) {
-        // TODO... close previous sockets
-        if (sockets[id]) {
-            sockets[id].close();
-            delete sockets[id];
-        }
-        console.log(`${id}: open ${url} -> ${id}`)
-        const ws = sockets[id] = new WebSocket(url);
-        ws.onerror = (e) => {
-            if (sockets[id] !== ws) return; // outdated message
+function uint8ArrayToString(input) {
+    let len = input.length;
+    let res = ""
+    for (let i = 0; i < len; ++i)
+        res += String.fromCharCode(input[i]);
+    return res;
+}
 
-            const data = new Uint8Array([ERROR_MESSAGE, id])
-            console.log(`${id}: error`, { data })
-            proxy(data)
-        }
-        ws.onopen = () => {
-            if (sockets[id] !== ws) return; // outdated message
+function makeCodeRun(options) {
+    var code = "";
+    var isReady = false;
+    var simState = {}
+    var simStateChanged = false
+    var started = false;
 
-            const data = new Uint8Array([OPEN_MESSAGE, id]);
-            console.log(`${id}: open`, { data })
-            proxy(data)
-        }
-        ws.onclose = (e) => {
-            if (sockets[id] !== ws) return; // outdated message
-            const code = e.code;
-            const data = new Uint8Array([CLOSE_MESSAGE, id, (code >> 24) & 0xff, (code >> 16) & 0xff, (code >> 8) & 0xff, code & 0xff]);
-            console.log(`${id}: close`, { data })
-            proxy(data)
-        }
-        ws.onmessage = async (e) => {
-            if (sockets[id] !== ws) return; // outdated message
+    // hide scrollbar
+    window.scrollTo(0, 1);
+    // init runtime
+    initSimState();
+    fetchCode();
 
-            let d = e.data;
-            const isstring = typeof d === "string";
-            // blob/arraybuffer -> uint8array
-            if (!isstring) {
-                // blob -> arrayBuffer
-                if (ws.binaryType === "blob") {
-                    d = await d.arrayBuffer();
-                }
-                // array buffer -> uint8array
-                d = new Uint8Array(d);
-            }
-            // type, id, isstring, size, data
-            const data = new Uint8Array(2 + d.length);
-            data[0] = MESSAGE_MESSAGE | (isstring ? STRING_DATA : BUFFER_DATA);
-            data[1] = id;
-            if (isstring) {
-                for (let i = 0; i < d.length; ++i)
-                    data[i + 2] = d.charCodeAt(i);
-            } else {
-                for (let i = 0; i < d.length; ++i)
-                    data[i + 2] = d[i];
-            }
-            proxy(data)
-        }
-    }
-
-    addSimMessageHandler("wss", (msg) => {
-        const type = msg[0]
-        const id = msg[1];
-
-        if (type === OPEN_MESSAGE) {
-            const url = uint8ArrayToString(msg.slice(2))
-            openSocket(id, url)
-        } else if ((type & MESSAGE_MESSAGE) == MESSAGE_MESSAGE) {
-            const socket = sockets[id];
-            if (!socket) {
-                console.warning(`socket not found`, { id })
+    // helpers
+    function fetchCode() {
+        sendReq(options.js, function (c, status) {
+            if (status != 200)
                 return;
+            code = c;
+            // find metadata
+            code.replace(/^\/\/\s+meta=([^\n]+)\n/m, function (m, metasrc) {
+                meta = JSON.parse(metasrc);
+            })
+            var vel = document.getElementById("version");
+            if (meta.version && meta.repo && vel) {
+                var ap = document.createElement("a");
+                ap.download = "arcade.uf2";
+                ap.href = "https://github.com/" + meta.repo + "/releases/download/v" + meta.version + "/arcade.uf2";
+                ap.innerText = "v" + meta.version;
+                vel.appendChild(ap);
             }
+            // load simulator with correct version
+            document.getElementById("simframe")
+                .setAttribute("src", meta.simUrl);
+            initFullScreen();
+        })
+    }
 
-            let data = msg.slice(2);
-            if ((type & STRING_DATA) === STRING_DATA)
-                data = uint8ArrayToString(data);
-            socket.send(data);
+    function startSim() {
+        if (!code || !isReady || started)
+            return
+        setState("run");
+        started = true;
+        const runMsg = {
+            type: "run",
+            parts: [],
+            code: code,
+            partDefinitions: {},
+            cdnUrl: meta.cdnUrl,
+            version: meta.target,
+            storedState: simState,
+            frameCounter: 1,
+            options: {
+                "theme": "green",
+                "player": ""
+            },
+            id: "green-" + Math.random()
         }
-    })
+        simPostMessage(runMsg);
+    }
+
+    function stopSim() {
+        setState("stopped");
+        simPostMessage({
+            type: "stop"
+        });
+        started = false;
+    }
 
     window.addEventListener('message', function (ev) {
-        const d = ev.data
-        if (d.type === "simulator" && d.command === "restart") {
-            // clean out sockets
-            const temp = sockets;
-            sockets = {};
-            Object.keys(temp).forEach(id => {
+        var d = ev.data
+        if (d.type == "ready") {
+            var loader = document.getElementById("loader");
+            if (loader)
+                loader.remove();
+            isReady = true;
+            startSim();
+        } else if (d.type == "simulator") {
+            switch (d.command) {
+                case "restart":
+                    stopSim();
+                    startSim();
+                    break;
+                case "setstate":
+                    if (d.stateValue === null)
+                        delete simState[d.stateKey];
+                    else
+                        simState[d.stateKey] = d.stateValue;
+                    simStateChanged = true;
+                    break;
+            }
+        } else if (d.type === "messagepacket" && d.channel) {
+            const handler = channelHandlers[d.channel]
+            if (handler) {
                 try {
-                    temp[id].close();
-                } catch (e) { }
-            });
+                    const buf = d.data;
+                    handler(buf);
+                } catch (e) {
+                    console.log(`invalid simmessage`)
+                    console.log(e)
+                }
+            }
+        }            
+    }, false);
+
+    // helpers         
+
+    function setState(st) {
+        var r = document.getElementById("root");
+        if (r)
+            r.setAttribute("data-state", st);
+    }
+
+    function sendReq(url, cb) {
+        var xhttp = new XMLHttpRequest();
+        xhttp.onreadystatechange = function () {
+            if (xhttp.readyState == 4) {
+                cb(xhttp.responseText, xhttp.status)
+            }
+        };
+        xhttp.open("GET", url, true);
+        xhttp.send();
+    }
+
+    function initSimState() {
+        try {
+            simState = JSON.parse(localStorage["simstate"])
+        } catch (e) {
+            simState = {}
         }
-    });
-})
+        setInterval(function () {
+            if (simStateChanged)
+                localStorage["simstate"] = JSON.stringify(simState)
+            simStateChanged = false
+        }, 200)
+    }
+    
+    function initFullScreen() {
+        var sim = document.getElementById("simframe");
+        var fs = document.getElementById("fullscreen");
+        if (fs && sim.requestFullscreen) {
+            fs.onclick = function() { sim.requestFullscreen(); }
+        } else if (fs) {
+            fs.remove();
+        }
+    }
+}
