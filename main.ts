@@ -1,10 +1,10 @@
 
 game.consoleOverlay.setVisible(true)
 control.runInParallel(function () {
-    console.log(`connecting to wss://localhost:8080`)
+    console.log(`connecting to wss://make-com.ddns.net:8080`)
 
     // string tests
-    const ws = new WebSocket("wss://localhost:8080")
+    const ws = new WebSocket("wss://make-com.ddns.net:8080")
     ws.onerror = () => console.log("error")
     ws.onmessage = (msg) => {
         const data = msg.data;
