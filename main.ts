@@ -11,7 +11,7 @@ control.runInParallel(function () {
         console.log(`[Recieved] ${data}`)
     }
     ws.onopen = () => {
-        const msg = "help me pls test";
+        const msg = "connected. you win";
         ws.send(msg);
         console.log(`[Sent] ${msg}`);
     }
